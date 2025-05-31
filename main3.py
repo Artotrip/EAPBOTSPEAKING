@@ -12,31 +12,72 @@ from aiogram.filters import CommandStart
 from aiogram.types import Message, InputFile
 import openai
 
-# ─── ЗАГРУЗКА КОНФИГА ─────────────────────────────────────────────────────────
+# Для Google Drive API
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# ─── ЗАГРУЗКА КОНФИГА И ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ─────────────────────────────────
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")  # ID папки на Google Диске, куда сохранять файлы
+
+if not TELEGRAM_TOKEN:
+    raise RuntimeError("Переменная окружения TELEGRAM_TOKEN не установлена")
+if not OPENAI_API_KEY:
+    raise RuntimeError("Переменная окружения OPENAI_API_KEY не установлена")
+if not GOOGLE_SERVICE_ACCOUNT_JSON:
+    raise RuntimeError("Переменная окружения GOOGLE_SERVICE_ACCOUNT_JSON не установлена")
+if not GOOGLE_DRIVE_FOLDER_ID:
+    raise RuntimeError("Переменная окружения GOOGLE_DRIVE_FOLDER_ID не установлена")
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TELEGRAM_TOKEN)
-dp  = Dispatcher()
+dp = Dispatcher()
 openai.api_key = OPENAI_API_KEY
 
-# Папка для хранения mp3-файлов
+# ─── ПАПКИ ДЛЯ ЛОКАЛЬНЫХ ФАЙЛОВ ──────────────────────────────────────────────
 AUDIO_DIR = "voice_records_mp3"
 os.makedirs(AUDIO_DIR, exist_ok=True)
-
-# Папка для хранения текстовых логов (если нужно отправлять ответы как файлы)
 TEXT_DIR = "text_records"
 os.makedirs(TEXT_DIR, exist_ok=True)
 
-# Путь к JSON-файлу для логов «запрос–ответ»
 LOG_FILE = "records.json"
+TELEGRAM_MESSAGE_LIMIT = 4000  # ≈4096 символов лимит
 
-# Ограничение Telegram: около 4096 символов в одном сообщении
-TELEGRAM_MESSAGE_LIMIT = 4000
+# ─── GOOGLE DRIVE: ФУНКЦИИ ДЛЯ ЗАГРУЗКИ ────────────────────────────────────────
+def build_drive_service():
+    """
+    Строит сервис Google Drive, используя JSON ключ сервисного аккаунта из переменной окружения.
+    """
+    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    credentials = service_account.Credentials.from_service_account_info(
+        info,
+        scopes=["https://www.googleapis.com/auth/drive.file"]
+    )
+    service = build("drive", "v3", credentials=credentials)
+    return service
 
-# ─── ПОЛНЫЙ СИСТЕМНЫЙ ПРОМПТ ─────────────────────────────────────────────────
+def upload_file_to_gdrive(filepath, parent_folder_id=None):
+    """
+    Загружает файл по локальному пути filepath на Google Диск.
+    Если указан parent_folder_id, помещает файл в эту папку.
+    Возвращает ID загруженного файла.
+    """
+    service = build_drive_service()
+    file_metadata = {"name": os.path.basename(filepath)}
+    if parent_folder_id:
+        file_metadata["parents"] = [parent_folder_id]
+    media = MediaFileUpload(filepath, resumable=True)
+    uploaded = service.files().create(
+        body=file_metadata, media_body=media, fields="id"
+    ).execute()
+    logging.info(f"Uploaded {filepath} to Google Drive with ID {uploaded.get('id')}")
+    return uploaded.get("id")
+
+# ─── СИСТЕМНЫЙ ПРОМПТ ─────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """Standardized Oral Language Assessment System Using ChatGPT-4o:
 You are an automated oral language assessment system designed for uniform evaluation of academic English graduate students' oral monologue responses. Each response must contain exactly 10–12 complete sentences. Responses with fewer than 10 sentences automatically receive a volume score of 0. Pronunciation and Intonation are NOT assessed in this model.
 
@@ -204,15 +245,15 @@ EXAMPLE_2_OUTPUT = (
     "- Синонимы: darn expensive → considerably expensive; hang out → socialize; thing → device.\n"
 )
 
-# ─── ФУНКЦИЯ ОЦЕНКИ ─────────────────────────────────────────────────────────
+# ─── ФУНКЦИЯ ОЦЕНИВАНИЯ ТЕКСТА ─────────────────────────────────────────────────────────────────
 async def assess_text(text: str) -> str:
     messages = [
-        {"role": "system",    "content": SYSTEM_PROMPT},
-        {"role": "user",      "content": EXAMPLE_1_INPUT},
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": EXAMPLE_1_INPUT},
         {"role": "assistant", "content": EXAMPLE_1_OUTPUT},
-        {"role": "user",      "content": EXAMPLE_2_INPUT},
+        {"role": "user", "content": EXAMPLE_2_INPUT},
         {"role": "assistant", "content": EXAMPLE_2_OUTPUT},
-        {"role": "user",      "content": text},
+        {"role": "user", "content": text},
     ]
     resp = openai.chat.completions.create(
         model="gpt-4.1",
@@ -224,16 +265,14 @@ async def assess_text(text: str) -> str:
 
 def sanitize_filename(name: str) -> str:
     """
-    Убирает из строки все символы, неприемлемые в именах файлов, и заменяет пробелы на _
+    Убирает из строки все символы, неприемлемые в именах файлов, и заменяет пробелы на '_'
     """
-    # Оставляем только буквы, цифры, пробелы
     cleaned = re.sub(r"[^A-Za-z0-9А-Яа-яёЁ\s]", "", name)
-    # Заменяем последовательности пробелов на один _
     return re.sub(r"\s+", "_", cleaned).strip("_")
 
 def log_interaction(request_text: str, response_text: str) -> None:
     """
-    Записывает запрос пользователя и ответ модели (оригинальный текст) в JSON-файл.
+    Записывает запрос пользователя и ответ модели в локальный JSON и загружает этот JSON на Google Drive.
     """
     entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -241,6 +280,7 @@ def log_interaction(request_text: str, response_text: str) -> None:
         "response": response_text
     }
 
+    # Читаем старый файл (если есть) и добавляем новую запись
     if os.path.isfile(LOG_FILE):
         try:
             with open(LOG_FILE, "r", encoding="utf-8") as f:
@@ -253,12 +293,19 @@ def log_interaction(request_text: str, response_text: str) -> None:
     else:
         data = [entry]
 
+    # Сохраняем локально
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
+    # Загружаем на Google Drive
+    try:
+        upload_file_to_gdrive(LOG_FILE, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID)
+    except Exception as e:
+        logging.error(f"Не удалось загрузить {LOG_FILE} на Google Drive: {e}")
+
 async def send_long_message(message: Message, text: str):
     """
-    Разбивает длинный текст на фрагменты (≤ TELEGRAM_MESSAGE_LIMIT) и отправляет их.
+    Разбивает большой текст на фрагменты по ~4000 символов и отправляет их последовательно.
     """
     if len(text) <= TELEGRAM_MESSAGE_LIMIT:
         await message.answer(text)
@@ -280,15 +327,19 @@ async def send_long_message(message: Message, text: str):
 
 async def send_response_as_file(message: Message, text: str, base_filename: str):
     """
-    Сохраняет текст в файл и отправляет его как документ (UTF-8).
+    Сохраняет текст в файл и отправляет его как документ.
     """
     timestamp_str = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     filename = f"{base_filename}_{timestamp_str}.txt"
     filepath = os.path.join(TEXT_DIR, filename)
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(text)
-
     await message.answer_document(InputFile(filepath))
+    # Загружаем текстовый файл на Google Drive
+    try:
+        upload_file_to_gdrive(filepath, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID)
+    except Exception as e:
+        logging.error(f"Не удалось загрузить {filepath} на Google Drive: {e}")
 
 # ─── ХЭНДЛЕР /start ─────────────────────────────────────────────────────────
 @dp.message(CommandStart())
@@ -305,50 +356,56 @@ async def handle_voice(message: Message):
     await bot.send_chat_action(message.chat.id, action="typing")
     fi = await bot.get_file(message.voice.file_id)
 
-    # Генерируем временное имя для .oga и .mp3
+    # Временные имена
     timestamp_str = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     temp_oga = f"temp_{timestamp_str}.oga"
     temp_mp3 = f"temp_{timestamp_str}.mp3"
 
-    # Скачиваем OGA во временный файл
+    # Скачиваем voice.oga
     await bot.download_file(fi.file_path, temp_oga)
 
-    # Конвертируем во временный MP3
+    # Конвертируем в MP3
     ffmpeg.input(temp_oga).output(temp_mp3, format="mp3").run(quiet=True, overwrite_output=True)
 
-    # Расшифровка с помощью Whisper
+    # Расшифровка через Whisper
     with open(temp_mp3, "rb") as audio:
         transcription = openai.audio.transcriptions.create(
             model="whisper-1", file=audio
         ).text.strip()
 
-    # Удаляем временный .oga (он уже не нужен)
+    # Удаляем временный .oga
     os.remove(temp_oga)
 
-    # Формируем имя MP3 из первых 3-4 слов транскрипции
+    # Формируем финальное имя MP3 из первых 3-4 слов транскрипции
     first_words = "_".join(transcription.split()[:4])
     sanitized = sanitize_filename(first_words)
     mp3_filename = f"{sanitized}.mp3"
     mp3_path = os.path.join(AUDIO_DIR, mp3_filename)
 
-    # Переименовываем временный MP3 в финальное имя
+    # Переименовываем temp MP3 в нужное
     os.replace(temp_mp3, mp3_path)
 
-    # Отправляем расшифровку
+    # Отправляем расшифровку пользователю
     await message.answer(f"Расшифровка:\n{transcription}")
 
-    # Оценка через ChatGPT
+    # Загружаем MP3 на Google Drive
+    try:
+        upload_file_to_gdrive(mp3_path, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID)
+    except Exception as e:
+        logging.error(f"Не удалось загрузить {mp3_path} на Google Drive: {e}")
+
+    # Оценка текста через ChatGPT
     result = await assess_text(transcription)
 
-    # Логируем оригинальный результат
+    # Логируем запрос и ответ, сохраняем и загружаем records.json
     log_interaction(request_text=transcription, response_text=result)
 
-    # Отправляем ответ модели (разбиваем, если длинный)
+    # Отправляем ответ модели
     if len(result) <= TELEGRAM_MESSAGE_LIMIT:
         await message.answer(result)
     else:
         await send_long_message(message, result)
-        # Вместо этого можно отправить как файл:
+        # Или отправить как файл:
         # await send_response_as_file(message, result, base_filename="response")
 
 # ─── ХЭНДЛЕР ТЕКСТОВЫХ ───────────────────────────────────────────────────────
@@ -357,15 +414,15 @@ async def handle_text(message: Message):
     await bot.send_chat_action(message.chat.id, action="typing")
     result = await assess_text(message.text)
 
-    # Логируем оригинальный текстовый ответ
+    # Логируем запрос–ответ
     log_interaction(request_text=message.text, response_text=result)
 
-    # Отправляем ответ модели (разбиваем, если длинный)
+    # Отправляем ответ модели
     if len(result) <= TELEGRAM_MESSAGE_LIMIT:
         await message.answer(result)
     else:
         await send_long_message(message, result)
-        # Или можно отправить как файл:
+        # Или:
         # await send_response_as_file(message, result, base_filename="response")
 
 # ─── СТАРТ ПОЛЛИНГА ─────────────────────────────────────────────────────────
