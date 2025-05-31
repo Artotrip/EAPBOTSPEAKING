@@ -22,7 +22,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
-GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")  # ID папки на Google Диске, куда сохранять файлы
+GOOGLE_DRIVE_FOLDER_ID = os.getenv("GOOGLE_DRIVE_FOLDER_ID")  # ID папки на Google Диске
 
 if not TELEGRAM_TOKEN:
     raise RuntimeError("Переменная окружения TELEGRAM_TOKEN не установлена")
@@ -44,10 +44,10 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 TEXT_DIR = "text_records"
 os.makedirs(TEXT_DIR, exist_ok=True)
 
-LOG_FILE = "records.json"
+LOG_FILE = "records1.json"
 TELEGRAM_MESSAGE_LIMIT = 4000  # ≈4096 символов лимит
 
-# ─── GOOGLE DRIVE: ФУНКЦИИ ДЛЯ ЗАГРУЗКИ ────────────────────────────────────────
+# ─── GOOGLE DRIVE: ФУНКЦИИ ДЛЯ ЗАГРУЗКИ И ОБНОВЛЕНИЯ ФАЙЛОВ ──────────────────────────
 def build_drive_service():
     """
     Строит сервис Google Drive, используя JSON ключ сервисного аккаунта из переменной окружения.
@@ -60,22 +60,58 @@ def build_drive_service():
     service = build("drive", "v3", credentials=credentials)
     return service
 
-def upload_file_to_gdrive(filepath, parent_folder_id=None):
+def find_file_on_drive(service, filename, parent_folder_id):
     """
-    Загружает файл по локальному пути filepath на Google Диск.
-    Если указан parent_folder_id, помещает файл в эту папку.
-    Возвращает ID загруженного файла.
+    Ищет файл filename в указанной папке parent_folder_id.
+    Возвращает fileId, если найден, иначе None.
+    """
+    query = f"name = '{filename}' and '{parent_folder_id}' in parents and trashed = false"
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    items = results.get("files", [])
+    if items:
+        return items[0]["id"]
+    return None
+
+def upload_file_to_gdrive(filepath, parent_folder_id=None, is_log=False):
+    """
+    Загружает или обновляет файл на Google Диске.
+    Если is_log=True и файл с таким именем уже есть в папке, обновляет его (files.update).
+    Иначе создаёт новый (files.create).
+    Возвращает ID загруженного/обновлённого файла.
     """
     service = build_drive_service()
-    file_metadata = {"name": os.path.basename(filepath)}
+    filename = os.path.basename(filepath)
+
+    # Если это лог (records.json) — попытаемся найти уже существующий файл
+    if is_log:
+        existing_id = find_file_on_drive(service, filename, parent_folder_id)
+    else:
+        existing_id = None
+
+    file_metadata = {"name": filename}
     if parent_folder_id:
         file_metadata["parents"] = [parent_folder_id]
     media = MediaFileUpload(filepath, resumable=True)
-    uploaded = service.files().create(
-        body=file_metadata, media_body=media, fields="id"
-    ).execute()
-    logging.info(f"Uploaded {filepath} to Google Drive with ID {uploaded.get('id')}")
-    return uploaded.get("id")
+
+    if existing_id:
+        # Обновляем существующий файл
+        updated = service.files().update(
+            fileId=existing_id,
+            body=file_metadata,
+            media_body=media,
+            fields="id"
+        ).execute()
+        logging.info(f"Updated '{filename}' on Google Drive (ID={existing_id})")
+        return updated.get("id")
+    else:
+        # Создаём новый файл
+        created = service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id"
+        ).execute()
+        logging.info(f"Uploaded new '{filename}' to Google Drive (ID={created.get('id')})")
+        return created.get("id")
 
 # ─── СИСТЕМНЫЙ ПРОМПТ ─────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """Standardized Oral Language Assessment System Using ChatGPT-4o:
@@ -111,13 +147,13 @@ General Recommendation
 Concise summary highlighting the student's strengths and prioritized recommendations for improvement.
 
 List of Errors
-Provide a comprehensive list of all detected grammatical and lexical errors, along with corrected versions and the topic on which the mistake was made. All examples must be quoted in English.
+Provide a comprehensive list of all detected grammatical и lexical errors, along with corrected versions и the topic on which the mistake was made. All examples must be quoted in English.
 
 Practice Exercises
 For each aspect where errors are detected, generate specific test-style exercises tailored to the student's mistakes. Avoid general advice. The model must create concrete grammar or vocabulary tests relevant to the identified issues. Don't write answers to the tests.
 
 Theoretical Information (if required)
-Concise theoretical background provided when the error suggests fundamental conceptual gaps (e.g., list of cohesive devices or grammar structures).
+Concise theoretical background provided when the error suggests fundamental conceptual gaps (e.g., list of cohesive devices или grammar structures).
 """
 
 # ─── ОБНОВЛЁННЫЕ FEW-SHOT ПРИМЕРЫ ──────────────────────────────────────────────
@@ -129,7 +165,7 @@ EXAMPLE_1_INPUT = (
     "For example, when my research group worked with scientists from France, it was hard to express complicated idea clearly. "
     "Many scientists use translators, but translators sometimes make mistakes. Therefore, learning foreign language help scientist to avoid misunderstanding. "
     "Although some people argue translation technology solve language problem, I disagree. It is better if we can understand each other directly. "
-    "Foreign languages are therefore useful for international collaboration and solving of science issues."
+    "Foreign languages are therefore useful for international collaboration и solving of science issues."
 )
 EXAMPLE_1_OUTPUT = (
     "Общая оценка: 3\n"
@@ -182,16 +218,16 @@ EXAMPLE_1_OUTPUT = (
 
 EXAMPLE_2_INPUT = (
     "Describe some technology (e.g. an app, phone, software program) that you decided to stop using. "
-    "Well, it can be shocking to many, but I stopped using “smartphone” - a finely made, shiny, metallic “thing”, "
+    "Well, it can be shocking to many, но I stopped using “smartphone” - a finely made, shiny, metallic “thing”, "
     "about 5-inch tall and 3-inch wide - which I bought at least 3 years ago due to some “popular uprising” within "
     "the ranks of my immediate family members, who claimed that I could never become a “smart person” if I didn’t own a smartphone. "
-    "So, after being fed up with their “constant nagging”, I finally decided to go to a smartphone store in my home town one day "
-    "and offered them a “bundle” of my hard-earned money to buy a smartphone (well, that thing was darn expensive - I can tell you that). "
-    "Now, on second thought, it was not only because of the “pushing and nagging” that I finally decided to buy that nice little technological wonder "
-    "but also because it would allow me to watch videos, receive emails and browse social media on the go. "
-    "But, then, a few months ago, technology fatigue struck me as I got bored of using it too much when I could have gone outdoors with friends. "
-    "Besides, the device was so fragile that it would break if dropped. So, one day I told myself that had had enough of this smartphone thing, "
-    "and that was the story of terminating my relationship with that technology."
+    "So, after being fed up with их “constant nagging”, I finally decided to go to a smartphone store in my home town one day "
+    "и offered them a “bundle” of my hard-earned money to buy a smartphone (well, that thing was darn expensive - I can tell you that). "
+    "Now, on second thought, it was не только because of the “pushing and nagging” that I finally decided to buy that nice little technological wonder "
+    "но also потому что it would allow me to watch videos, receive emails и browse social media on the go. "
+    "But, then, a few months ago, technology fatigue struck me as I got bored of using it too much когда I could have gone outdoors with friends. "
+    "Besides, the device was so fragile что it would break если dropped. So, one day I told myself что had had enough of this smartphone thing, "
+    "а that was the story of terminating my relationship with that technology."
 )
 EXAMPLE_2_OUTPUT = (
     "Общая оценка: 4\n"
@@ -225,9 +261,9 @@ EXAMPLE_2_OUTPUT = (
     "- Аргументация: хороший старт, но требует усиления аналитичности.\n\n"
     "Список ошибок:\n"
     "◉ “smartphone” - a finely made, shiny, metallic “thing” → “a smartphone – a compact, metallic device” (Избыточная разговорность)\n"
-    "◉ constant nagging → persistent pressure or insistence (Разговорный стиль)\n"
+    "◉ constant nagging → persistent pressure или insistence (Разговорный стиль)\n"
     "◉ that thing was darn expensive → the device was considerably expensive (Сленг)\n"
-    "◉ pushing and nagging → external social pressure (Повтор, разговорность)\n"
+    "◉ pushing и nagging → external social pressure (Повтор, разговорность)\n"
     "◉ hang out with my friends → spend time socially (Снижение академичности)\n"
     "◉ that damn thing → that fragile device (Сленг)\n"
     "◉ magic spell which was continuously being released → influence it exerted on my attention (Художественная метафора)\n"
@@ -236,7 +272,7 @@ EXAMPLE_2_OUTPUT = (
     "Упражнение 1: Найдите сленговые выражения и замените их на академические.\n"
     "Упражнение 2: Перепишите предложения в академическом стиле:\n"
     "  - That smartphone thing was a shiny little “magic box.”\n"
-    "  - My family kept pushing and nagging me to buy it.\n"
+    "  - My family kept pushing и nagging me to buy it.\n"
     "  - I wanted to hang out instead of using it.\n"
     "Упражнение 3: Избегайте повторов и тавтологии:\n"
     "  Rewrite: “I stopped using it because I was spending too much money using the internet on that technology.”\n\n"
@@ -245,7 +281,7 @@ EXAMPLE_2_OUTPUT = (
     "- Синонимы: darn expensive → considerably expensive; hang out → socialize; thing → device.\n"
 )
 
-# ─── ФУНКЦИЯ ОЦЕНИВАНИЯ ТЕКСТА ─────────────────────────────────────────────────────────────────
+# ─── ФУНКЦИЯ ОЦЕНИВАНИЯ ТЕКСТА ─────────────────────────────────────────────────────────────
 async def assess_text(text: str) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -272,7 +308,8 @@ def sanitize_filename(name: str) -> str:
 
 def log_interaction(request_text: str, response_text: str) -> None:
     """
-    Записывает запрос пользователя и ответ модели в локальный JSON и загружает этот JSON на Google Drive.
+    Записывает запрос пользователя и ответ модели в локальный JSON и обновляет этот JSON на Google Drive
+    (не создаёт новый файл, а обновляет существующий).
     """
     entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -297,11 +334,11 @@ def log_interaction(request_text: str, response_text: str) -> None:
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-    # Загружаем на Google Drive
+    # Обновляем (или создаём) файл на Google Drive
     try:
-        upload_file_to_gdrive(LOG_FILE, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID)
+        upload_file_to_gdrive(LOG_FILE, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID, is_log=True)
     except Exception as e:
-        logging.error(f"Не удалось загрузить {LOG_FILE} на Google Drive: {e}")
+        logging.error(f"Не удалось обновить {LOG_FILE} на Google Drive: {e}")
 
 async def send_long_message(message: Message, text: str):
     """
@@ -328,6 +365,7 @@ async def send_long_message(message: Message, text: str):
 async def send_response_as_file(message: Message, text: str, base_filename: str):
     """
     Сохраняет текст в файл и отправляет его как документ.
+    Затем обновляет (или создаёт) этот файл на Google Drive.
     """
     timestamp_str = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     filename = f"{base_filename}_{timestamp_str}.txt"
@@ -335,9 +373,9 @@ async def send_response_as_file(message: Message, text: str, base_filename: str)
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(text)
     await message.answer_document(InputFile(filepath))
-    # Загружаем текстовый файл на Google Drive
+
     try:
-        upload_file_to_gdrive(filepath, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID)
+        upload_file_to_gdrive(filepath, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID, is_log=False)
     except Exception as e:
         logging.error(f"Не удалось загрузить {filepath} на Google Drive: {e}")
 
@@ -347,7 +385,7 @@ async def cmd_start(message: Message):
     await bot.send_chat_action(message.chat.id, action="typing")
     await message.answer(
         "Привет, аспирант! Я бот для оценки устной академической речи. "
-        "Отправь текст или голосовое сообщение, и я выдам расшифровку и оценку по шаблону."
+        "Отправь текст или голосовое сообщение, и я выдам расшифровку и свою оценку."
     )
 
 # ─── ХЭНДЛЕР ГОЛОСОВЫХ ───────────────────────────────────────────────────────
@@ -361,10 +399,10 @@ async def handle_voice(message: Message):
     temp_oga = f"temp_{timestamp_str}.oga"
     temp_mp3 = f"temp_{timestamp_str}.mp3"
 
-    # Скачиваем voice.oga
+    # Скачиваем OGA во временный файл
     await bot.download_file(fi.file_path, temp_oga)
 
-    # Конвертируем в MP3
+    # Конвертируем во временный MP3
     ffmpeg.input(temp_oga).output(temp_mp3, format="mp3").run(quiet=True, overwrite_output=True)
 
     # Расшифровка через Whisper
@@ -382,22 +420,22 @@ async def handle_voice(message: Message):
     mp3_filename = f"{sanitized}.mp3"
     mp3_path = os.path.join(AUDIO_DIR, mp3_filename)
 
-    # Переименовываем temp MP3 в нужное
+    # Переименовываем temp MP3 в нужное имя
     os.replace(temp_mp3, mp3_path)
 
     # Отправляем расшифровку пользователю
     await message.answer(f"Расшифровка:\n{transcription}")
 
-    # Загружаем MP3 на Google Drive
+    # Загружаем MP3 на Google Drive (каждый раз создаётся новый, аудио мы не обновляем)
     try:
-        upload_file_to_gdrive(mp3_path, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID)
+        upload_file_to_gdrive(mp3_path, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID, is_log=False)
     except Exception as e:
         logging.error(f"Не удалось загрузить {mp3_path} на Google Drive: {e}")
 
     # Оценка текста через ChatGPT
     result = await assess_text(transcription)
 
-    # Логируем запрос и ответ, сохраняем и загружаем records.json
+    # Логируем запрос и ответ: сохраняем локально и обновляем records.json на Drive
     log_interaction(request_text=transcription, response_text=result)
 
     # Отправляем ответ модели
