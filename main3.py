@@ -44,7 +44,7 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 TEXT_DIR = "text_records"
 os.makedirs(TEXT_DIR, exist_ok=True)
 
-LOG_FILE = "records.json"
+LOG_FILE = "records_new.json"
 TELEGRAM_MESSAGE_LIMIT = 4000  # примерно 4096 символов
 
 # ─── GOOGLE DRIVE: ФУНКЦИИ ДЛЯ ЗАГРУЗКИ И ОБНОВЛЕНИЯ ФАЙЛОВ ──────────────────────────
