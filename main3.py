@@ -44,8 +44,8 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 TEXT_DIR = "text_records"
 os.makedirs(TEXT_DIR, exist_ok=True)
 
-LOG_FILE = "records1.json"
-TELEGRAM_MESSAGE_LIMIT = 4000  # ≈4096 символов лимит
+LOG_FILE = "records.json"
+TELEGRAM_MESSAGE_LIMIT = 4000  # примерно 4096 символов
 
 # ─── GOOGLE DRIVE: ФУНКЦИИ ДЛЯ ЗАГРУЗКИ И ОБНОВЛЕНИЯ ФАЙЛОВ ──────────────────────────
 def build_drive_service():
@@ -75,36 +75,38 @@ def find_file_on_drive(service, filename, parent_folder_id):
 def upload_file_to_gdrive(filepath, parent_folder_id=None, is_log=False):
     """
     Загружает или обновляет файл на Google Диске.
-    Если is_log=True и файл с таким именем уже есть в папке, обновляет его (files.update).
-    Иначе создаёт новый (files.create).
+    Если is_log=True и файл с таким именем уже есть в папке, обновляет его (files.update без поля parents).
+    Иначе создаёт новый (files.create с указанием parents).
     Возвращает ID загруженного/обновлённого файла.
     """
     service = build_drive_service()
     filename = os.path.basename(filepath)
 
-    # Если это лог (records.json) — попытаемся найти уже существующий файл
     if is_log:
+        # Если это лог (records.json), попытаемся найти уже существующий файл
         existing_id = find_file_on_drive(service, filename, parent_folder_id)
     else:
         existing_id = None
 
-    file_metadata = {"name": filename}
-    if parent_folder_id:
-        file_metadata["parents"] = [parent_folder_id]
+    # Мета-данные: при создании обязательно указываем parents;
+    # при обновлении (existing_id) не передаём поле parents вовсе.
     media = MediaFileUpload(filepath, resumable=True)
 
     if existing_id:
-        # Обновляем существующий файл
+        # Обновляем существующий файл: только содержимое (media_body),
+        # без изменения parents
         updated = service.files().update(
             fileId=existing_id,
-            body=file_metadata,
             media_body=media,
             fields="id"
         ).execute()
         logging.info(f"Updated '{filename}' on Google Drive (ID={existing_id})")
         return updated.get("id")
     else:
-        # Создаём новый файл
+        # Создаём новый файл, указывая parents
+        file_metadata = {"name": filename}
+        if parent_folder_id:
+            file_metadata["parents"] = [parent_folder_id]
         created = service.files().create(
             body=file_metadata,
             media_body=media,
@@ -125,32 +127,32 @@ Aggregate score representing the holistic quality of the response based on crite
 
 Aspect Evaluation (each scored from 0 to 5)
 Lexical and Grammatical Accuracy:
-Criteria: Accuracy and appropriate complexity of grammar; precision and appropriateness of academic vocabulary.
-Methodology: Automated syntactic parsing and lexical frequency analysis (Industrial Engineering: NLP-based parsing and computational linguistics).
+Criteria: Accuracy и appropriate complexity of grammar; precision и appropriateness of academic vocabulary.
+Methodology: Automated syntactic parsing и lexical frequency analysis (Industrial Engineering: NLP-based parsing и computational linguistics).
 
-Coherence and Cohesion:
-Criteria: Logical flow of information; clear introduction, development, and conclusion; effective use of linking devices.
+Coherence и Cohesion:
+Criteria: Logical flow of information; clear introduction, development, и conclusion; effective use of linking devices.
 Methodology: Text cohesion algorithms, discourse structure analysis (Industrial Engineering: NLP coherence modeling).
 
-Fluency and Spontaneity:
-Criteria: Smooth, uninterrupted speech; minimal hesitations, repetitions, or corrections.
-Methodology: Automated temporal analysis, hesitation frequency analysis (Industrial Engineering: real-time processing algorithms and temporal analytics).
+Fluency и Spontaneity:
+Criteria: Smooth, uninterrupted speech; minimal hesitations, repetitions, или corrections.
+Methodology: Automated temporal analysis, hesitation frequency analysis (Industrial Engineering: real-time processing algorithms и temporal analytics).
 
-Argumentation and Critical Thinking:
-Criteria: Logical argumentation; effective use of examples and evidence; acknowledgment and consideration of alternative viewpoints.
-Methodology: Automated reasoning analysis, semantic content evaluation (Industrial Engineering: AI-driven argumentation analysis and semantic evaluation models).
+Argumentation и Critical Thinking:
+Criteria: Logical argumentation; effective use of examples и evidence; acknowledgment и consideration of alternative viewpoints.
+Methodology: Automated reasoning analysis, semantic content evaluation (Industrial Engineering: AI-driven argumentation analysis и semantic evaluation models).
 
 Aspect-specific Comments
 Clearly articulate specific errors, citing examples directly from the student's monologue.
 
 General Recommendation
-Concise summary highlighting the student's strengths and prioritized recommendations for improvement.
+Concise summary highlighting the student's strengths и prioritized recommendations for improvement.
 
 List of Errors
 Provide a comprehensive list of all detected grammatical и lexical errors, along with corrected versions и the topic on which the mistake was made. All examples must be quoted in English.
 
 Practice Exercises
-For each aspect where errors are detected, generate specific test-style exercises tailored to the student's mistakes. Avoid general advice. The model must create concrete grammar or vocabulary tests relevant to the identified issues. Don't write answers to the tests.
+For each aspect where errors are detected, generate specific test-style exercises tailored to the student's mistakes. Avoid general advice. The model must create concrete grammar или vocabulary tests relevant to the identified issues. Don't write answers to the tests.
 
 Theoretical Information (if required)
 Concise theoretical background provided when the error suggests fundamental conceptual gaps (e.g., list of cohesive devices или grammar structures).
@@ -165,7 +167,7 @@ EXAMPLE_1_INPUT = (
     "For example, when my research group worked with scientists from France, it was hard to express complicated idea clearly. "
     "Many scientists use translators, but translators sometimes make mistakes. Therefore, learning foreign language help scientist to avoid misunderstanding. "
     "Although some people argue translation technology solve language problem, I disagree. It is better if we can understand each other directly. "
-    "Foreign languages are therefore useful for international collaboration и solving of science issues."
+    "Foreign languages are therefore useful for international collaboration and solving of science issues."
 )
 EXAMPLE_1_OUTPUT = (
     "Общая оценка: 3\n"
@@ -204,7 +206,7 @@ EXAMPLE_1_OUTPUT = (
     "  a) helping   b) help   c) helps\n\n"
     "Упражнение 2: Вставьте артикль и исправьте форму слова:\n"
     "  It is  global language.\n"
-    "  Many share their ideas.\n"
+    "  Many share их ideas.\n"
     "  Learning foreign language is useful.\n\n"
     "Упражнение 3: Найдите и исправьте ошибку:\n"
     "  Many scientist must communicate in English.\n"
@@ -221,13 +223,13 @@ EXAMPLE_2_INPUT = (
     "Well, it can be shocking to many, но I stopped using “smartphone” - a finely made, shiny, metallic “thing”, "
     "about 5-inch tall and 3-inch wide - which I bought at least 3 years ago due to some “popular uprising” within "
     "the ranks of my immediate family members, who claimed that I could never become a “smart person” if I didn’t own a smartphone. "
-    "So, after being fed up with их “constant nagging”, I finally decided to go to a smartphone store in my home town one day "
+    "So, after being fed up с их “constant nagging”, I finally decided to go to a smartphone store in my home town one day "
     "и offered them a “bundle” of my hard-earned money to buy a smartphone (well, that thing was darn expensive - I can tell you that). "
-    "Now, on second thought, it was не только because of the “pushing and nagging” that I finally decided to buy that nice little technological wonder "
-    "но also потому что it would allow me to watch videos, receive emails и browse social media on the go. "
+    "Now, on second thought, it was не только because of the “pushing и nagging” что I finally decided to buy that nice little technological wonder "
+    "но also потому что it would allow мне to watch videos, receive emails и browse social media on the go. "
     "But, then, a few months ago, technology fatigue struck me as I got bored of using it too much когда I could have gone outdoors with friends. "
     "Besides, the device was so fragile что it would break если dropped. So, one day I told myself что had had enough of this smartphone thing, "
-    "а that was the story of terminating my relationship with that technology."
+    "а that was the story of terminating моей relationship with that technology."
 )
 EXAMPLE_2_OUTPUT = (
     "Общая оценка: 4\n"
@@ -273,9 +275,9 @@ EXAMPLE_2_OUTPUT = (
     "Упражнение 2: Перепишите предложения в академическом стиле:\n"
     "  - That smartphone thing was a shiny little “magic box.”\n"
     "  - My family kept pushing и nagging me to buy it.\n"
-    "  - I wanted to hang out instead of using it.\n"
+    "  - I wanted to hang out вместо using it.\n"
     "Упражнение 3: Избегайте повторов и тавтологии:\n"
-    "  Rewrite: “I stopped using it because I was spending too much money using the internet on that technology.”\n\n"
+    "  Rewrite: “I stopped using it because I was spending too much money using the internet на that technology.”\n\n"
     "Теоретическая справка:\n"
     "- Формальный регистр: избегать выражений типа darn, damn, thing, hang out, magic spell.\n"
     "- Синонимы: darn expensive → considerably expensive; hang out → socialize; thing → device.\n"
@@ -308,8 +310,7 @@ def sanitize_filename(name: str) -> str:
 
 def log_interaction(request_text: str, response_text: str) -> None:
     """
-    Записывает запрос пользователя и ответ модели в локальный JSON и обновляет этот JSON на Google Drive
-    (не создаёт новый файл, а обновляет существующий).
+    Записывает запрос пользователя и ответ модели в локальный JSON и обновляет этот JSON на Google Drive.
     """
     entry = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -334,7 +335,7 @@ def log_interaction(request_text: str, response_text: str) -> None:
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
 
-    # Обновляем (или создаём) файл на Google Drive
+    # Обновляем (или создаём) файл на Google Drive, передавая is_log=True
     try:
         upload_file_to_gdrive(LOG_FILE, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID, is_log=True)
     except Exception as e:
@@ -365,7 +366,7 @@ async def send_long_message(message: Message, text: str):
 async def send_response_as_file(message: Message, text: str, base_filename: str):
     """
     Сохраняет текст в файл и отправляет его как документ.
-    Затем обновляет (или создаёт) этот файл на Google Drive.
+    Затем загружает этот файл на Google Drive как новый.
     """
     timestamp_str = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
     filename = f"{base_filename}_{timestamp_str}.txt"
@@ -374,6 +375,7 @@ async def send_response_as_file(message: Message, text: str, base_filename: str)
         f.write(text)
     await message.answer_document(InputFile(filepath))
 
+    # Загружаем как новый файл
     try:
         upload_file_to_gdrive(filepath, parent_folder_id=GOOGLE_DRIVE_FOLDER_ID, is_log=False)
     except Exception as e:
@@ -385,7 +387,7 @@ async def cmd_start(message: Message):
     await bot.send_chat_action(message.chat.id, action="typing")
     await message.answer(
         "Привет, аспирант! Я бот для оценки устной академической речи. "
-        "Отправь текст или голосовое сообщение, и я выдам расшифровку и свою оценку."
+        "Отправь текст или голосовое сообщение, и я выдам расшифровку и оценку по шаблону."
     )
 
 # ─── ХЭНДЛЕР ГОЛОСОВЫХ ───────────────────────────────────────────────────────
@@ -399,7 +401,7 @@ async def handle_voice(message: Message):
     temp_oga = f"temp_{timestamp_str}.oga"
     temp_mp3 = f"temp_{timestamp_str}.mp3"
 
-    # Скачиваем OGA во временный файл
+    # Скачиваем voice.oga
     await bot.download_file(fi.file_path, temp_oga)
 
     # Конвертируем во временный MP3
