@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.env
+venv/
+*.log
+bin/
+IMG_8506.MOV
+reply.mp3
+reply.ogg
+voice.mp3
+voice.oga
+voice_records/
+voice_records_mp3/
